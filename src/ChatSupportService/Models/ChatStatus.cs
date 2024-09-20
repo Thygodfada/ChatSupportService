@@ -5,7 +5,6 @@ namespace ChatSupportService.Models;
 public enum ChatStatus
 {
     Queued,
-    Active,
-    Inactive,
-    Completed
+    Active
 }
+

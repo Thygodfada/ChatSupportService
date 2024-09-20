@@ -1,6 +1,6 @@
 using System;
 using ChatSupportService.Models;
-using Microsoft.EntityFrameworkCore; // Add this using directive
+using Microsoft.EntityFrameworkCore;
 
 namespace ChatSupportService.Data
 {

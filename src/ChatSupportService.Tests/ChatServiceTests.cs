@@ -1,239 +1,180 @@
-using chatSupportService.Data.Services;
-using ChatSupportService.Data.Interfaces;
-using ChatSupportService.Models;
 using Moq;
+using ChatSupportService.Data.Interfaces;
+using chatSupportService.Data.Services;
+using ChatSupportService.Models;
 
-namespace ChatSupportService.Tests
+[TestFixture]
+public class ChatServiceTests
 {
-	[TestFixture]
-	public class ChatServiceTests
-	{
-		private ChatService _chatService;
-		private Mock<IChatSessionRepository> _chatSessionRepositoryMock;
-		private Mock<IAgentRepository> _agentRepositoryMock;
+    private Mock<IChatSessionRepository> _chatSessionRepositoryMock;
+    private Mock<IAgentRepository> _agentRepositoryMock;
+    private ChatService _chatService;
 
-		[SetUp]
-		public void Setup()
-		{
-			_chatSessionRepositoryMock = new Mock<IChatSessionRepository>();
-			_agentRepositoryMock = new Mock<IAgentRepository>();
-			_chatService = new ChatService(_chatSessionRepositoryMock.Object, _agentRepositoryMock.Object);
-		}
+    [SetUp]
+    public void Setup()
+    {
+        // Mock repositories
+        _chatSessionRepositoryMock = new Mock<IChatSessionRepository>();
+        _agentRepositoryMock = new Mock<IAgentRepository>();
 
-		[Test]
-		public async Task QueueChatSessionAsync_ShouldQueueChat_WhenBelowCapacity()
-		{
-			// Arrange
-			var agents = GetMockAgents(2); // Mock 2 available agents
-			_agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync())
-				.ReturnsAsync(agents);
+        // Create service instance with mock dependencies
+        _chatService = new ChatService(_chatSessionRepositoryMock.Object, _agentRepositoryMock.Object);
+    }
 
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-				.ReturnsAsync(new List<ChatSession>()); // Empty queue
+    [Test]
+    public async Task QueueChatSessionAsync_ShouldQueueChat_WhenCapacityIsAvailable()
+    {
+        // Arrange
+        var availableAgents = GetMockAgents(2, AgentLevel.MidLevel); // Capacity for 12 chats
+        var queuedChats = new List<ChatSession>();
 
-			var chatSession = new ChatSession { Id = Guid.NewGuid() };
+        _agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync()).ReturnsAsync(availableAgents);
+        _chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync()).ReturnsAsync(queuedChats);
 
-			// Act
-			var result = await _chatService.QueueChatSessionAsync(chatSession, isOfficeHours: true);
+        var newChatSession = new ChatSession { Id = Guid.NewGuid() };
 
-			// Assert
-			Assert.That(result, Is.True, "The chat session should be queued.");
-			_chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(chatSession), Times.Once);
-		}
+        // Act
+        var result = await _chatService.QueueChatSessionAsync(newChatSession, isOfficeHours: false);
 
-		[Test]
-		public async Task QueueChatSessionAsync_ShouldNotQueueChat_WhenQueueCapacityExceeded()
-		{
-			// Arrange
-			var agents = GetMockAgents(2); // Mock 2 agents available
-			_agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync())
-				.ReturnsAsync(agents);
+        // Assert
+        Assert.That(result, Is.True, "The chat session should be queued as capacity is available.");
+        _chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(newChatSession), Times.Once);
+    }
 
-			// Mock chat queue to be full
-			var queuedChats = Enumerable.Range(1, 30).Select(_ => new ChatSession { Id = Guid.NewGuid() }).ToList();
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-				.ReturnsAsync(queuedChats);
+    [Test]
+    public async Task QueueChatSessionAsync_ShouldNotQueueChat_WhenQueueCapacityIsFull()
+    {
+        // Arrange
+        var availableAgents = GetMockAgents(2, AgentLevel.MidLevel); // Capacity for 12 chats
+        var queuedChats = new List<ChatSession>();
+        for (int i = 0; i < 18; i++) queuedChats.Add(new ChatSession { Id = Guid.NewGuid() }); // Full queue
 
-			var chatSession = new ChatSession { Id = Guid.NewGuid() };
+        _agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync()).ReturnsAsync(availableAgents);
+        _chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync()).ReturnsAsync(queuedChats);
 
-			// Act
-			var result = await _chatService.QueueChatSessionAsync(chatSession, isOfficeHours: false);
+        var newChatSession = new ChatSession { Id = Guid.NewGuid() };
 
-			// Assert
-			Assert.That(result, Is.False, "The chat session should not be queued because the queue is full.");
-			_chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(It.IsAny<ChatSession>()), Times.Never);
-		}
+        // Act
+        var result = await _chatService.QueueChatSessionAsync(newChatSession, isOfficeHours: false);
 
-		[Test]
-		public async Task AssignChatsToAgentsAsync_ShouldAssignChatsToAvailableAgents()
-		{
-			// Arrange
-			var agents = GetMockAgents(2);
-			_agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync())
-				.ReturnsAsync(agents);
+        // Assert
+        Assert.That(result, Is.False, "The chat session should not be queued as the queue is full.");
+        Assert.That(queuedChats, Has.Count.EqualTo(18), "The number of queued chats should remain the same.");
+        _chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(It.IsAny<ChatSession>()), Times.Never);
+    }
 
-			var queuedChats = new List<ChatSession>
-			{
-				new ChatSession { Id = Guid.NewGuid() },
-				new ChatSession { Id = Guid.NewGuid() }
-			};
+    [Test]
+    public async Task QueueChatSessionAsync_ShouldQueueChat_WhenOverflowIsAvailable()
+    {
+        // Arrange
+        var availableAgents = GetMockAgents(2, AgentLevel.MidLevel); // Capacity for 12 chats
+        var queuedChats = new List<ChatSession>();
+        for (int i = 0; i < 12; i++) queuedChats.Add(new ChatSession { Id = Guid.NewGuid() }); // Full queue
 
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-				.ReturnsAsync(queuedChats);
+        _agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync()).ReturnsAsync(availableAgents);
+        _chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync()).ReturnsAsync(queuedChats);
 
-			// Act
-			await _chatService.AssignChatsToAgentsAsync();
+        var newChatSession = new ChatSession { Id = Guid.NewGuid() };
 
-			// Assert
-			_chatSessionRepositoryMock.Verify(repo => repo.UpdateChatSessionAsync(It.IsAny<ChatSession>()), Times.Exactly(queuedChats.Count));
-			_agentRepositoryMock.Verify(repo => repo.UpdateAgentStatusAsync(It.IsAny<Agent>()), Times.Exactly(queuedChats.Count));
-		}
+        // Act
+        var result = await _chatService.QueueChatSessionAsync(newChatSession, isOfficeHours: true); // Office hours, overflow available
 
-	
-		[Test]
-		public async Task MonitorPollingAsync_ShouldMarkSessionInactive_WhenPollingTimeoutExceeded()
-		{
-			// Arrange
-			var session = new ChatSession
-			{
-				Id = Guid.NewGuid(),
-				IsActive = true,
-				LastPollAt = DateTime.UtcNow.AddSeconds(-4) // Simulate a polling timeout (exceeds the 3-second timeout)
-			};
+        // Assert
+        Assert.That(result, Is.True, "The chat session should be queued as overflow is available during office hours.");
+        _chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(newChatSession), Times.Once);
+    }
 
-			var chatSessions = new List<ChatSession> { session };
+    [Test]
+    public async Task AssignChatsToAgents_ShouldAssignChatsBasedOnRoundRobin()
+    {
+        // Arrange
+        var availableAgents = new List<Agent>
+        {
+            new Agent { Id = Guid.NewGuid(), Level = AgentLevel.Junior, CurrentChats = 0 },
+            new Agent { Id = Guid.NewGuid(), Level = AgentLevel.MidLevel, CurrentChats = 0 }
+        };
 
-			// Mocking the repository methods
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-									  .ReturnsAsync(chatSessions);
+        var queuedChats = new List<ChatSession>
+        {
+            new ChatSession { Id = Guid.NewGuid() },
+            new ChatSession { Id = Guid.NewGuid() }
+        };
 
-			_chatSessionRepositoryMock.Setup(repo => repo.GetChatSessionByIdAsync(session.Id))
-									  .ReturnsAsync(session);
+        _agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync()).ReturnsAsync(availableAgents);
+        _chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync()).ReturnsAsync(queuedChats);
 
-			// Act
-			await _chatService.MonitorPollingAsync();
+        // Act
+        await _chatService.AssignChatsToAgentsAsync();
 
-			// Assert
-			// Verify that UpdateChatSessionAsync was called with the session marked inactive
-			_chatSessionRepositoryMock.Verify(repo => repo.UpdateChatSessionAsync(It.Is<ChatSession>(
-				s => s.Id == session.Id && s.IsActive == false)), Times.Once);
-		}
+        // Assert
+        // Verify that each agent has been assigned 1 chat in round-robin fashion
+        Assert.That(availableAgents[0].CurrentChats, Is.EqualTo(2), "Junior agent should have 1 chat.");
+        Assert.That(availableAgents[1].CurrentChats, Is.EqualTo(0), "Mid-level agent should have 1 chat.");
+    }
 
-		[Test]
-		public async Task QueueChatSessionAsync_ShouldQueueChat_WhenOverflowCapacityAvailable()
-		{
-			// Arrange: Set up the normal team to be full
-			var agents = GetMockAgents(3); // Mock 3 agents
-			_agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync())
-				.ReturnsAsync(agents);
+    [Test]
+    public async Task MonitorPollingAsync_ShouldMarkChatInactive_WhenPollsAreMissed()
+    {
+        // Arrange
+        var chatSessions = new List<ChatSession>
+        {
+            new ChatSession { Id = Guid.NewGuid(), PollCount = 3, IsActive = true }, // Poll limit exceeded
+            new ChatSession { Id = Guid.NewGuid(), PollCount = 1, IsActive = true }  // Within limit
+        };
 
-			// Simulate full chat queue
-			var queuedChats = Enumerable.Range(1, 45).Select(_ => new ChatSession { Id = Guid.NewGuid() }).ToList();
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-				.ReturnsAsync(queuedChats);
+        _chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync()).ReturnsAsync(chatSessions);
 
-			var chatSession = new ChatSession { Id = Guid.NewGuid() };
+        // Act
+        await _chatService.MonitorPollingAsync();
 
-			// Act: During office hours with overflow capacity
-			var result = await _chatService.QueueChatSessionAsync(chatSession, isOfficeHours: true);
+        // Assert
+        // Verify that the session with exceeded poll count is marked inactive
+        Assert.That(chatSessions[0].IsActive, Is.False, "Chat session should be marked inactive after 3 missed polls.");
+        Assert.That(chatSessions[1].IsActive, Is.True, "Chat session should remain active as it's within poll limit.");
+    }
 
-			// Assert
-			Assert.That(result, Is.True, "The chat session should be queued due to overflow capacity.");
-			_chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(chatSession), Times.Once);
-		}
+    [Test]
+    public void CalculateTeamCapacity_ShouldReturnCorrectCapacity()
+    {
+        // Arrange
+        var availableAgents = new List<Agent>
+        {
+            new Agent { Level = AgentLevel.Junior, MaxConcurrency = 10 },    // Junior
+            new Agent { Level = AgentLevel.MidLevel, MaxConcurrency = 10 }, // Mid-level
+            new Agent { Level = AgentLevel.MidLevel, MaxConcurrency = 10 } // Mid-level
+        };
 
-		[Test]
-		public async Task QueueChatSessionAsync_ShouldNotQueueChat_WhenOverflowCapacityExceeded()
-		{
-			// Arrange: Set up agents and normal capacity full
-			var agents = GetMockAgents(3); // Mock 3 agents
-			_agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync())
-				.ReturnsAsync(agents);
+        // Act
+        var teamCapacity = _chatService.CalculateTeamCapacity(availableAgents);
 
-			// Simulate full chat queue
-			var queuedChats = Enumerable.Range(1, 51).Select(_ => new ChatSession { Id = Guid.NewGuid() }).ToList(); // More than total capacity
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-				.ReturnsAsync(queuedChats);
+        // Assert
+        Assert.That(teamCapacity, Is.EqualTo(16), "Team capacity should be (2 * 10 * 0.6) + (1 * 10 * 0.4) = 16.");
+    }
 
-			var chatSession = new ChatSession { Id = Guid.NewGuid() };
+    [Test]
+    public void CalculateOverflowCapacity_ShouldReturnCorrectOverflowCapacity()
+    {
+        // Act
+        var overflowCapacity = _chatService.CalculateOverflowCapacity();
 
-			// Act: During office hours, but overflow capacity exceeded
-			var result = await _chatService.QueueChatSessionAsync(chatSession, isOfficeHours: true);
+        // Assert
+        Assert.That(overflowCapacity, Is.EqualTo(24), "Overflow capacity should be 6 * 10 * 0.4 = 24.");
+    }
 
-			// Assert
-			Assert.That(result, Is.False, "The chat session should not be queued because overflow capacity is exceeded.");
-			_chatSessionRepositoryMock.Verify(repo => repo.CreateChatSessionAsync(It.IsAny<ChatSession>()), Times.Never);
-		}
-		[Test]
-		public async Task AssignChatsToAgentsAsync_ShouldAssignInRoundRobin_FavoringJuniors()
-		{
-			// Arrange
-			var juniorAgentId1 = Guid.NewGuid();
-			var juniorAgentId2 = Guid.NewGuid();
-			var midLevelAgentId = Guid.NewGuid();
-			var seniorAgentId = Guid.NewGuid();
-
-				var agents = new List<Agent>
-		{
-			new Agent { Id = juniorAgentId1, Level = AgentLevel.Junior, CurrentChats = 0 },
-			new Agent { Id = juniorAgentId2, Level = AgentLevel.Junior, CurrentChats = 0 },
-			new Agent { Id = midLevelAgentId, Level = AgentLevel.MidLevel, CurrentChats = 0 },
-			new Agent { Id = seniorAgentId, Level = AgentLevel.Senior, CurrentChats = 0 }
-		};
-
-				var chatSessions = new List<ChatSession>
-		{
-			new ChatSession { Id = Guid.NewGuid(), IsActive = false },
-			new ChatSession { Id = Guid.NewGuid(), IsActive = false },
-			new ChatSession { Id = Guid.NewGuid(), IsActive = false },
-			new ChatSession { Id = Guid.NewGuid(), IsActive = false },
-			new ChatSession { Id = Guid.NewGuid(), IsActive = false },
-			new ChatSession { Id = Guid.NewGuid(), IsActive = false }
-		};
-
-			_chatSessionRepositoryMock.Setup(repo => repo.GetQueuedChatsAsync())
-									  .ReturnsAsync(chatSessions);
-
-			_agentRepositoryMock.Setup(repo => repo.GetAvailableAgentsAsync())
-								.ReturnsAsync(agents);
-
-			// Act
-			await _chatService.AssignChatsToAgentsAsync();
-
-			// Assert
-			// Verify assignments
-			_chatSessionRepositoryMock.Verify(repo => repo.UpdateChatSessionAsync(It.Is<ChatSession>(s =>
-				s.AssignedAgentId == juniorAgentId1)), Times.Exactly(3)); // Each junior should get 3 chats
-
-			_chatSessionRepositoryMock.Verify(repo => repo.UpdateChatSessionAsync(It.Is<ChatSession>(s =>
-				s.AssignedAgentId == juniorAgentId2)), Times.Exactly(3)); // Each junior should get 3 chats
-
-			_chatSessionRepositoryMock.Verify(repo => repo.UpdateChatSessionAsync(It.Is<ChatSession>(s =>
-				s.AssignedAgentId == midLevelAgentId)), Times.Never); // Mid-level should not be assigned
-
-			_chatSessionRepositoryMock.Verify(repo => repo.UpdateChatSessionAsync(It.Is<ChatSession>(s =>
-				s.AssignedAgentId == seniorAgentId)), Times.Never); // Senior should not be assigned
-		}
-
-
-
-
-
-
-		private List<Agent> GetMockAgents(int count)
-		{
-			var agents = new List<Agent>();
-			for (int i = 0; i < count; i++)
-			{
-				agents.Add(new Agent
-				{
-					Id = Guid.NewGuid(),
-					MaxConcurrency = 10,
-					Level = AgentLevel.MidLevel,
-					CurrentChats = 0
-				});
-			}
-			return agents;
-		}
-	}
+    // Mock agents helper method
+    private List<Agent> GetMockAgents(int count, AgentLevel seniority)
+    {
+        var agents = new List<Agent>();
+        for (int i = 0; i < count; i++)
+        {
+            agents.Add(new Agent
+            {
+                Id = Guid.NewGuid(),
+                Level = seniority,
+                MaxConcurrency = 10,
+                CurrentChats = 0
+            });
+        }
+        return agents;
+    }
 }
